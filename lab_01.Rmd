@@ -1,0 +1,261 @@
+---
+title: Text Mining I. Counting words
+author: Kirill Maslinsky
+output: html_document
+editor_options: 
+  chunk_output_type: console
+  code_folding: show
+---
+
+## Text into data
+
+Install necessary packages, if required. 
+
+```{r, eval=FALSE}
+install.packages("readr")
+install.packages("plyr")
+install.packages("dplyr")
+install.packages("tidytext")
+install.packages("stopwords")
+install.packages("wordcloud")
+install.packages("ggplot2")
+```
+
+Text mining tasks usually deal with a large number of text fragments:
+e. g. tweets, news, reviews etc. Having obtained these kind of data,
+we commonly have them in a table format with one of the columns
+containing text data, one at a line. Other columns typically contain
+some *metadata* about the text: author, title, date etc.
+
+Our today's example is a collection of PostNauka video lectures.
+The source of data: https://postnauka.ru
+
+```{r}
+library(readxl)
+pn_df <- read_excel("PostNauka_data.xlsx")
+```
+
+One line in a table corresponds to a lecturer's speech. Texts are
+located in the column "Text".
+
+
+```{r}
+
+library(plyr)
+library(dplyr)
+library(tidytext)
+
+text_df <- data_frame(line = as.integer(pn_df$ID), text = pn_df$Text, prof = pn_df$Profession_Code)
+pn_df.long <- text_df %>%
+    unnest_tokens(words, text)
+
+
+```
+
+Tokens are units of text, words in our case. Characters, sentences,
+word sequences (n-grams) may also serve as tokens for some tasks.
+
+## Frequency
+
+Now we have a *words* column in our table. Technically, it is a
+categorical variable with as many values as there are distinct words
+in all the texts. 
+
+```{r}
+pn_df.long %>%
+    select(words) %>%
+    n_distinct() # quite a lot!
+```
+
+Too much words to inspect. Let's have a glance at the most frequent
+ones, they should be the most informative, shouldn't they?
+
+```{r}
+library(ggplot2)
+pn_df.long %>%
+    dplyr::count(words, sort = TRUE) %>%
+    filter(row_number() < 15) %>%
+    ggplot(aes(x = reorder(words, n), y = n)) +
+    geom_col() +
+    labs(x = "word") + 
+    coord_flip() +
+    theme(axis.text=element_text(size=18))
+```
+
+Not very informative. Well, how the distribution looks like?
+
+## Lexical statistics. Zipf's law
+
+```{r}
+pn_df.long %>%
+    dplyr::count(words, sort = TRUE) %>%
+    filter(n>250) %>%
+    ggplot(aes(rev(reorder(words, n)), n)) +
+    geom_bar(stat="identity", show.legend=FALSE) +
+    theme_minimal()
+```
+
+Long-tail distribution (power law). Few giants, many dwarfs.
+
+It was empirically observed that for any large enough collection of
+texts the distribution of word frequencies is almost log-linear.
+
+```{r}
+pn_df.long %>%
+    dplyr::count(words, sort = TRUE) %>%
+    dplyr::mutate(rank = row_number()) %>%
+    ggplot(aes(rank, n)) +
+    geom_line() +
+    scale_x_log10() +
+    scale_y_log10()
+```
+
+This observation is called *Zipf's law*.
+
+## Stopwords
+
+The most frequent words in any language вЂ” prepositions, conjunctions,
+pronouns вЂ” have the most abstract meaning. If we are interested in
+analysing content of the texts, they are not informative to us. 
+Let's try to get rid of them.
+
+The list of these grammatical words for English and other languages
+may be found in the stopwords package.
+
+```{r}
+library(tm)
+stopwords("ru")
+```
+
+We have already seen a very similar list...
+
+```{r}
+top175words <- pn_df.long %>%
+    dplyr::count(words, sort=TRUE) %>%
+    filter(row_number() < 175) %>%
+    pull(words)
+head(top175words, 35)
+top175words[!top175words %in% stopwords("ru")]
+```
+
+Let's eliminate stopwords from the text and look what is left. 
+
+```{r}
+enstopwords <- data.frame(words=stopwords("ru"), stringsAsFactors=FALSE)
+pn_df.nonstop <- pn_df.long %>%
+    anti_join(enstopwords)
+```
+
+What percentage of total text volume has been removed?
+
+## Wordcloud
+
+Now we are going to represent the list of teh most frequent words as a
+word cloud.
+
+```{r}
+library(wordcloud)
+pn_df.nonstop %>%
+    dplyr::count(words) %>%
+    with(wordcloud(words, n, max.words = 100))
+```
+
+It is natural to assume that different scientists differ in their word
+usage. Wordclouds may be used to demonstrate this.
+
+
+## Normalized frequency
+
+Now that we have started to compare frequency lists (wordclouds), it
+is useful to represent counts on a normalized scale (scientists from 
+different spheres vary in eloquence and verbosity!). A conventional 
+unit for word frequencies in corpus linguistics is IPM (Instances Per 
+Million).
+
+
+```{r}
+pn_df.freq <- pn_df.long %>%
+    dplyr::group_by(prof) %>%
+    dplyr::mutate(totalwords=n()) %>%
+    dplyr::group_by(prof, words) %>%
+    dplyr::mutate(count=n()) %>%
+    dplyr::mutate(freq = count * ( 10e+6 / totalwords )) %>%
+    dplyr::slice(1)
+```
+
+## Wide format
+
+Long format is handy for frequency counting and for integration with
+tidyverse ecosystem. Yet for most statistical modeling and machine
+learning applications we need a list of features for each text, in
+columns.
+
+This is where wide format for text representation is needed.  Tidytext
+package offers a set of cast_* functions for transforming data in long
+format into wide format.
+
+For our first experiment with stopwords, we will leave stopwords ONLY.
+
+```{r}
+pn_df.stop <- pn_df.freq %>%
+    inner_join(enstopwords)
+```
+
+We may now cast our stopword counts matrix into wide format:
+
+```{r}
+stopwords.dtm <- pn_df.stop %>%
+    cast_sparse(prof, words, freq)
+```
+
+It is instructive to explore the resulting matrix for a while:
+
+```{r, eval=FALSE}
+stopwords.dtm %>% as.matrix %>% View
+```
+
+## Stylometry
+
+Is it true that stopwords should always be removed?
+
+Stylometry is a collection of methods to automatically measure and
+detect personal style. Stopwords proved to be a very valuable source
+for this task.
+
+Let's compare the distribution of stopwords in the speeches by
+different scientific fields.
+
+To reduce the dimensionality of data, we will use PCA (Principal
+Components Analysis). [An interactive visualisation that helps
+understand PCA](http://setosa.io/ev/principal-component-analysis/)
+
+```{r}
+stopwords.pca <- prcomp(stopwords.dtm)
+```
+
+Biplot graph is a nice visualization for PCA.  A package ggbiplot that
+is not on CRAN could be installed directly from github.
+
+```{r, eval=FALSE}
+install.packages("devtools")
+library(devtools)
+install_github("vqv/ggbiplot")
+library(scales)
+```
+
+All scientists positioned in a stopword distribution space.
+
+```{r}
+ggbiplot::ggbiplot(stopwords.pca, labels = rownames(stopwords.dtm))
+```
+
+**Your turn**:
+
+* Repeat PCA and plot a biplot, leaving only personal pronouns instead
+  of all stopwords. 
+  Hint: An easy way to obtain a list of personal pronouns вЂ” just take
+  first 29 words of the standard stoplist:
+
+```{r}
+pronouns <- head(stopwords("ru"), 29)
+```
